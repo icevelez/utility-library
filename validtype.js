@@ -8,15 +8,12 @@
     Edited  at: July 28, 2025
 
     I made this as an attempt to build my own implementation of valibot/zod in JSDoc
-
-    Changelog:
-        July 28, 2025: renamed "ValidType" to "TypeAssert"
 */
 
 /**
 * @template {any} T
 */
-class TypeAssert {
+class ValidType {
 
     /**
     * array of callbacks to validate custom type
@@ -84,41 +81,41 @@ class TypeAssert {
 }
 
 /**
-* @type {() => TypeAssert<number>}
+* @type {() => ValidType<number>}
 */
-export const number = () => new TypeAssert((i) => {
+export const number = () => new ValidType((i) => {
     if (!isNaN(i) && (i >= 0 || i <= 0) && typeof i === "number") return;
     throw new TypeError("not a number");
 });
 
 /**
-* @type {() => TypeAssert<string>}
+* @type {() => ValidType<string>}
 */
-export const string = () => new TypeAssert((i) => {
+export const string = () => new ValidType((i) => {
     if ((i || i === "") && typeof i === "string") return;
     throw new TypeError("not a string");
 });
 
 /**
-* @type {() => TypeAssert<Boolean>}
+* @type {() => ValidType<Boolean>}
 */
-export const boolean = () => new TypeAssert((i) => {
+export const boolean = () => new ValidType((i) => {
     if (i && typeof i === "boolean") return;
     throw new TypeError("not a boolean");
 });
 
 /**
-* @type {() => TypeAssert<Function>}
+* @type {() => ValidType<Function>}
 */
-export const func = () => new TypeAssert((i) => {
+export const func = () => new ValidType((i) => {
     if (i && typeof i === "function") return;
     throw new TypeError("not a function");
 });
 
 /**
-* @type {() => TypeAssert<Date>}
+* @type {() => ValidType<Date>}
 */
-export const date = () => new TypeAssert((i) => {
+export const date = () => new ValidType((i) => {
     if (typeof i === "string") i = new Date(i);
     if (i.toDateString() !== "Invalid Date" && i instanceof Date) return;
     throw new TypeError("not an instance of \"Date\"");
@@ -126,12 +123,12 @@ export const date = () => new TypeAssert((i) => {
 
 /**
 * @template {any} T
-* @param {TypeAssert<T>} type
-* @returns {TypeAssert<T[]>}
+* @param {ValidType<T>} type
+* @returns {ValidType<T[]>}
 */
 export const array = (type) => {
-    if (!(type instanceof TypeAssert)) throw new Error("input parameter is not an instance of \"TypeAssert\"");
-    return new TypeAssert((a) => {
+    if (!(type instanceof ValidType)) throw new Error("input parameter is not an instance of \"ValidType\"");
+    return new ValidType((a) => {
         if (a && Array.isArray(a) && a.every((a1) => typeof type.validate(a1) !== "string")) return;
         throw new TypeError("input is an invalid array")
     });
@@ -139,31 +136,33 @@ export const array = (type) => {
 
 /**
 * @template {any} T
-* @param {TypeAssert<T>} type
-* @returns {TypeAssert<Record<string, T>>}
+* @param {ValidType<T>} type
+* @returns {ValidType<Record<string, T>>}
 */
 export const record = (type) => {
-    if (!(type instanceof TypeAssert)) throw new Error("input parameter is not an instance of \"TypeAssert\"");
-    return new TypeAssert((r) => {
+    if (!(type instanceof ValidType)) throw new Error("input parameter is not an instance of \"ValidType\"");
+    return new ValidType((r) => {
         if (!r) throw new TypeError("input is an invalid record type")
         for (const key in r) {
             const error = type.validate(r[key])
-            if (error) throw new TypeError(error);
+            if (error) throw new TypeError(error.replace("Error :", ""));
         }
     });
 }
 
+const VALID_TYPE_OBJECT = Symbol("valid_type_object");
+
 /**
 * @template {any} T
-* @param {{ [K in keyof T]: TypeAssert<T[K]> }} schema
-* @returns {TypeAssert<{ [K in keyof T]: T[K] }>}
+* @param {{ [K in keyof T]: ValidType<T[K]> }} schema
+* @returns {ValidType<{ [K in keyof T]: T[K] }>}
 */
 export function object(schema) {
     const schema_keys = new Set(Object.keys(schema));
-    return new TypeAssert((data) => {
+    const validType = new ValidType((data) => {
         for (let key in data) {
             if (schema_keys.has(key)) schema_keys.delete(key);
-            if (!(schema[key] instanceof TypeAssert)) throw new Error(`schema at key ${key} is not an instance of \"TypeAssert\"`);
+            if (!(schema[key] instanceof ValidType)) throw new Error(`schema at key ${key} is not an instance of \"ValidType\"`);
             if (!schema[key]) throw new TypeError(`data.${key} is not in your schema defintion`);
             const has_error = schema[key].validate(data[key]);
             if (has_error) throw new TypeError(`"${key}" ${has_error}`);
@@ -171,17 +170,50 @@ export function object(schema) {
         if (schema_keys.size > 0) throw new TypeError(`object has missing property. ${JSON.stringify(Array.from(schema_keys))}`);
         return null;
     })
+    validType[VALID_TYPE_OBJECT] = schema;
+    return validType;
 };
 
 /**
  * @template {any} T
  * @param {Array<T>} array
- * @returns {TypeAssert<T extends TypeAssert<infer U> ? U : never>}
+ * @returns {ValidType<T extends ValidType<infer U> ? U : never>}
  */
-function unionX(array) {
-    if (!Array.isArray(array)) throw new Error("input is not an array");
-    if (!array.some((i) => i instanceof TypeAssert)) throw new Error("some type are not valid TypeAssert");
-    const union = new TypeAssert();
+export function union(array) {
+    if (!Array.isArray(array)) throw new TypeError("input is not an array");
+    if (!array.some((i) => i instanceof ValidType)) throw new TypeError("some type are not valid ValidType");
+    const union = new ValidType();
     for (const type of array) union.raw().addCallbacks(type.raw().callbacks);
     return union;
+}
+
+/**
+ * @template {any} T
+ * @param {T} object
+ * @param {ValidType<T>} schema
+ * @returns {T}
+ */
+export function createObject(object, schema) {
+    if (!schema[VALID_TYPE_OBJECT]) throw new TypeError("schema is not an ValidType<object>");
+    const target_schema = schema[VALID_TYPE_OBJECT];
+
+    return new Proxy(object, {
+        get(target, key) {
+            if (!target_schema[key]) throw new Error(`property "${key}" is not defined in the schema`);
+            return target[key];
+        },
+        set(target, key, new_value) {
+            if (!target_schema[key]) throw new Error(`property "${key}" is not defined in the schema`);
+
+            try {
+                const error = target_schema[key].validate(new_value);
+                if (error) throw error;
+            } catch (error) {
+                throw error;
+            }
+            target[key] = new_value;
+
+            return true;
+        }
+    })
 }
